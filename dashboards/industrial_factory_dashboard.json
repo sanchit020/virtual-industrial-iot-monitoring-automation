@@ -441,7 +441,7 @@
         "alignValue": "center",
         "mergeValues": true,
         "rowHeight": 0.8,
-        "showValue": "always"
+        "showValue": "auto"
       },
       "targets": [
         {
@@ -509,7 +509,7 @@
         "alignValue": "center",
         "mergeValues": true,
         "rowHeight": 0.8,
-        "showValue": "always"
+        "showValue": "auto"
       },
       "targets": [
         {
@@ -685,7 +685,7 @@
             "showPoints": "auto",
             "fillOpacity": 8
           },
-          "unit": "rotm"
+          "unit": "rpm"
         },
         "overrides": []
       },
@@ -733,7 +733,7 @@
             "showPoints": "auto",
             "fillOpacity": 8
           },
-          "unit": "flow"
+          "unit": "flowlmin"
         },
         "overrides": []
       },
@@ -797,7 +797,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "severity"
+              "options": "Severity"
             },
             "properties": [
               {
@@ -814,16 +814,16 @@
                     "type": "value",
                     "options": {
                       "CRITICAL": {
-                        "text": "CRITICAL",
-                        "color": "red"
+                        "color": "red",
+                        "text": "CRITICAL"
                       },
                       "WARNING": {
-                        "text": "WARNING",
-                        "color": "yellow"
+                        "color": "yellow",
+                        "text": "WARNING"
                       },
                       "INFO": {
-                        "text": "INFO",
-                        "color": "blue"
+                        "color": "blue",
+                        "text": "INFO"
                       }
                     }
                   }
@@ -834,60 +834,36 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "_time"
+              "options": "Timestamp"
             },
             "properties": [
               {
-                "id": "displayName",
-                "value": "Timestamp"
+                "id": "custom.width",
+                "value": 200
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "machine"
+              "options": "Machine / System"
             },
             "properties": [
               {
-                "id": "displayName",
-                "value": "Machine / System"
+                "id": "custom.width",
+                "value": 150
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "event_type"
+              "options": "Event Type"
             },
             "properties": [
               {
-                "id": "displayName",
-                "value": "Event Type"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "severity"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Severity"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "message"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Event Description"
+                "id": "custom.width",
+                "value": 180
               }
             ]
           }
@@ -918,6 +894,32 @@
           },
           "query": "from(bucket: \"industrial_iot\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"events\")\n  |> pivot(rowKey:[\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> drop(columns: [\"_start\", \"_stop\", \"_measurement\"])\n  |> map(fn: (r) => ({\n      r with\n      machine: if r.machine == \"machine1\" then \"Machine A\"\n               else if r.machine == \"machine2\" then \"Machine B\"\n               else if r.machine == \"machine3\" then \"Machine C\"\n               else if r.machine == \"factory\" then \"Factory System\"\n               else r.machine\n  }))\n  |> sort(columns: [\"_time\"], desc: true)",
           "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "_start": true,
+              "_stop": true,
+              "_measurement": true
+            },
+            "indexByName": {
+              "_time": 0,
+              "severity": 1,
+              "machine": 2,
+              "event_type": 3,
+              "message": 4
+            },
+            "renameByName": {
+              "_time": "Timestamp",
+              "severity": "Severity",
+              "machine": "Machine / System",
+              "event_type": "Event Type",
+              "message": "Event Description"
+            }
+          }
         }
       ]
     }
