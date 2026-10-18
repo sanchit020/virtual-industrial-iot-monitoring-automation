@@ -22,6 +22,8 @@ void Machine::update(double deltaTime) {
         load = 0.0;
         current = 0.0;
         rpm = 0.0;
+        fanOn = false;
+        pumpOn = false;
         coolantFlow = 0.0;
         temperature -= 0.5 * deltaTime;
 
@@ -41,11 +43,11 @@ void Machine::update(double deltaTime) {
 
     temperature += load * 0.02 * deltaTime;
 
-    if (fanOn && !fanFailed) {
+    if (isFanRunning()) {
         temperature -= 1.0 * deltaTime;
     }
 
-    if (pumpOn && !pumpFailed) {
+    if (isPumpRunning()) {
         temperature -= 2.5 * deltaTime;
         coolantFlow = 10.0;
     } else {
@@ -66,12 +68,15 @@ void Machine::setFan(bool state) {
 void Machine::setPump(bool state) {
     if (!shutdown) {
         pumpOn = state;
+        coolantFlow = isPumpRunning() ? 10.0 : 0.0;
     }
 }
 
 void Machine::setLoad(double value) {
     if (!shutdown) {
         load = value;
+        current = load * 10.0;
+        rpm = load * 30.0;
     }
 }
 
@@ -79,6 +84,10 @@ void Machine::triggerShutdown() {
     shutdown = true;
     fanOn = false;
     pumpOn = false;
+    coolantFlow = 0.0;
+    load = 0.0;
+    current = 0.0;
+    rpm = 0.0;
 }
 
 void Machine::triggerFanFailure() {
@@ -87,6 +96,7 @@ void Machine::triggerFanFailure() {
 
 void Machine::triggerPumpFailure() {
     pumpFailed = true;
+    coolantFlow = 0.0;
 }
 
 void Machine::triggerSensorFailure() {
@@ -96,6 +106,8 @@ void Machine::triggerSensorFailure() {
 void Machine::triggerOverload(double overloadValue) {
     if (!shutdown) {
         load = overloadValue;
+        current = load * 10.0;
+        rpm = load * 30.0;
         overloaded = true;
     }
 }
@@ -105,6 +117,32 @@ void Machine::clearFaults() {
     pumpFailed = false;
     sensorFailed = false;
     overloaded = false;
+}
+
+bool Machine::attemptRecovery(std::string& rejectionReason) {
+    if (shutdown) {
+        if (temperature >= 80.0) {
+            rejectionReason = "Recovery rejected: Core temperature " + std::to_string(static_cast<int>(temperature)) + " C is above safe threshold (80 C). Wait for cooldown.";
+            return false;
+        }
+        shutdown = false;
+        load = 60.0;
+        current = 600.0;
+        rpm = 1800.0;
+    }
+
+    if (load > 100.0) {
+        load = 60.0;
+        current = 600.0;
+        rpm = 1800.0;
+    }
+
+    fanFailed = false;
+    pumpFailed = false;
+    sensorFailed = false;
+    overloaded = false;
+    rejectionReason = "Machine recovered to normal operational state";
+    return true;
 }
 
 const std::string& Machine::getId() const {
@@ -136,15 +174,61 @@ double Machine::getCoolantFlow() const {
 }
 
 bool Machine::isFanOn() const {
-    return fanOn;
+    return isFanRunning();
 }
 
 bool Machine::isPumpOn() const {
-    return pumpOn;
+    return isPumpRunning();
 }
 
 bool Machine::isShutdown() const {
     return shutdown;
+}
+
+bool Machine::isFanCommanded() const {
+    return fanOn;
+}
+
+bool Machine::isPumpCommanded() const {
+    return pumpOn;
+}
+
+bool Machine::isFanOperational() const {
+    return !fanFailed;
+}
+
+bool Machine::isPumpOperational() const {
+    return !pumpFailed;
+}
+
+bool Machine::isFanRunning() const {
+    return fanOn && !fanFailed && !shutdown;
+}
+
+bool Machine::isPumpRunning() const {
+    return pumpOn && !pumpFailed && !shutdown;
+}
+
+double Machine::getFanCoolingRate() const {
+    return isFanRunning() ? 1.0 : 0.0;
+}
+
+double Machine::getPumpCoolingRate() const {
+    return isPumpRunning() ? 2.5 : 0.0;
+}
+
+int Machine::getFanTelemetryState() const {
+    if (fanFailed) {
+        return 2;
+    }
+    return fanOn ? 1 : 0;
+}
+
+int Machine::getPumpTelemetryState() const {
+    if (pumpFailed) {
+        return 2;
+    }
+    return pumpOn ? 1 : 0;
 }
 
 bool Machine::isFanFailed() const {

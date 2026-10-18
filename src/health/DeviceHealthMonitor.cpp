@@ -15,20 +15,24 @@ void DeviceHealthMonitor::recordHeartbeat(
     const std::string& deviceId) {
 
     std::string key = makeKey(machineId, deviceId);
-
     auto it = devices.find(key);
     if (it != devices.end()) {
         it->second.lastSeen = std::chrono::system_clock::now();
         it->second.online = true;
         it->second.missedHeartbeats = 0;
+        if (it->second.statusSummary == "OFFLINE" || it->second.statusSummary == "UNKNOWN") {
+            it->second.statusSummary = (it->second.valid && it->second.operational) ? "HEALTHY" : "DEGRADED";
+        }
     } else {
-        DeviceHealth health{
-            machineId,
-            deviceId,
-            true,
-            std::chrono::system_clock::now(),
-            0
-        };
+        DeviceHealth health;
+        health.machineId = machineId;
+        health.deviceId = deviceId;
+        health.online = true;
+        health.valid = true;
+        health.operational = true;
+        health.statusSummary = "HEALTHY";
+        health.lastSeen = std::chrono::system_clock::now();
+        health.missedHeartbeats = 0;
         devices[key] = health;
     }
 }
@@ -38,16 +42,53 @@ void DeviceHealthMonitor::registerDevice(
     const std::string& deviceId) {
 
     std::string key = makeKey(machineId, deviceId);
-
     if (devices.find(key) == devices.end()) {
-        DeviceHealth health{
-            machineId,
-            deviceId,
-            false,
-            std::chrono::system_clock::time_point{},
-            0
-        };
+        DeviceHealth health;
+        health.machineId = machineId;
+        health.deviceId = deviceId;
+        health.online = false;
+        health.valid = true;
+        health.operational = true;
+        health.statusSummary = "INITIALIZING";
+        health.lastSeen = std::chrono::system_clock::time_point{};
+        health.missedHeartbeats = 0;
         devices[key] = health;
+    }
+}
+
+void DeviceHealthMonitor::updateDeviceStatus(
+    const std::string& machineId,
+    const std::string& deviceId,
+    bool heartbeat,
+    bool valid,
+    bool operational,
+    const std::string& detail) {
+
+    std::string key = makeKey(machineId, deviceId);
+    auto it = devices.find(key);
+    if (it == devices.end()) {
+        registerDevice(machineId, deviceId);
+        it = devices.find(key);
+    }
+
+    if (heartbeat) {
+        it->second.lastSeen = std::chrono::system_clock::now();
+        it->second.online = true;
+        it->second.missedHeartbeats = 0;
+    }
+
+    it->second.valid = valid;
+    it->second.operational = operational;
+    it->second.detail = detail;
+
+    if (!it->second.online) {
+        it->second.statusSummary = "OFFLINE";
+    } else if (!operational) {
+        it->second.statusSummary = "HARDWARE_FAULT";
+    } else if (!valid) {
+        it->second.statusSummary = "DATA_INVALID";
+    } else {
+        it->second.statusSummary = "HEALTHY";
     }
 }
 
@@ -60,6 +101,7 @@ void DeviceHealthMonitor::checkHealth() {
         if (health.lastSeen.time_since_epoch().count() == 0) {
             health.online = false;
             health.missedHeartbeats++;
+            health.statusSummary = "OFFLINE";
             continue;
         }
 
@@ -70,9 +112,17 @@ void DeviceHealthMonitor::checkHealth() {
         if (elapsed > timeoutSeconds) {
             health.online = false;
             health.missedHeartbeats++;
+            health.statusSummary = "OFFLINE";
         } else {
             health.online = true;
             health.missedHeartbeats = 0;
+            if (!health.operational) {
+                health.statusSummary = "HARDWARE_FAULT";
+            } else if (!health.valid) {
+                health.statusSummary = "DATA_INVALID";
+            } else {
+                health.statusSummary = "HEALTHY";
+            }
         }
     }
 }
@@ -85,6 +135,16 @@ std::vector<DeviceHealth> DeviceHealthMonitor::getOfflineDevices() const {
         }
     }
     return offline;
+}
+
+std::vector<DeviceHealth> DeviceHealthMonitor::getUnhealthyDevices() const {
+    std::vector<DeviceHealth> unhealthy;
+    for (const auto& pair : devices) {
+        if (!pair.second.online || !pair.second.valid || !pair.second.operational) {
+            unhealthy.push_back(pair.second);
+        }
+    }
+    return unhealthy;
 }
 
 std::vector<DeviceHealth> DeviceHealthMonitor::getAllDevices() const {
@@ -112,10 +172,31 @@ bool DeviceHealthMonitor::isDeviceOnline(
     const std::string& deviceId) const {
 
     const DeviceHealth* health = getDeviceHealth(machineId, deviceId);
-    if (health) {
-        return health->online;
-    }
-    return false;
+    return health ? health->online : false;
+}
+
+bool DeviceHealthMonitor::isDeviceValid(
+    const std::string& machineId,
+    const std::string& deviceId) const {
+
+    const DeviceHealth* health = getDeviceHealth(machineId, deviceId);
+    return health ? (health->online && health->valid) : false;
+}
+
+bool DeviceHealthMonitor::isDeviceOperational(
+    const std::string& machineId,
+    const std::string& deviceId) const {
+
+    const DeviceHealth* health = getDeviceHealth(machineId, deviceId);
+    return health ? (health->online && health->operational) : false;
+}
+
+bool DeviceHealthMonitor::isDeviceHealthy(
+    const std::string& machineId,
+    const std::string& deviceId) const {
+
+    const DeviceHealth* health = getDeviceHealth(machineId, deviceId);
+    return health ? (health->online && health->valid && health->operational) : false;
 }
 
 std::vector<std::string> DeviceHealthMonitor::getMissingSensors(

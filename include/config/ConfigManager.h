@@ -28,8 +28,12 @@ private:
     FactoryConfig config;
 
 public:
+    ConfigManager();
     bool loadFromFile(const std::string& filePath);
+    bool validateConfig();
+    void resetToDefaults();
     const FactoryConfig& getConfig() const;
+    void setConfig(const FactoryConfig& newConfig);
 };
 
 #endif

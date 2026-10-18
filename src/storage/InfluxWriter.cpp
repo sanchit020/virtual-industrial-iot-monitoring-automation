@@ -19,11 +19,25 @@ InfluxWriter::InfluxWriter(const std::string& url,
       token(token) {
 }
 
+size_t InfluxWriter::getPendingTelemetryCount() const {
+    return pendingTelemetryRetry.size();
+}
+
+size_t InfluxWriter::getPendingEventCount() const {
+    return pendingEventsRetry.size();
+}
+
+void InfluxWriter::clearRetryBuffers() {
+    pendingTelemetryRetry.clear();
+    pendingEventsRetry.clear();
+}
+
 bool InfluxWriter::sendLineProtocol(const std::string& lineData) {
     if (url.empty() ||
         organization.empty() ||
         bucket.empty() ||
-        token.empty()) {
+        token.empty() ||
+        lineData.empty()) {
         return false;
     }
 
@@ -38,12 +52,15 @@ bool InfluxWriter::sendLineProtocol(const std::string& lineData) {
     URL_COMPONENTS components{};
     wchar_t host[256]{};
     wchar_t path[2048]{};
+    wchar_t extra[2048]{};
 
     components.dwStructSize = sizeof(components);
     components.lpszHostName = host;
     components.dwHostNameLength = sizeof(host) / sizeof(wchar_t);
     components.lpszUrlPath = path;
     components.dwUrlPathLength = sizeof(path) / sizeof(wchar_t);
+    components.lpszExtraInfo = extra;
+    components.dwExtraInfoLength = sizeof(extra) / sizeof(wchar_t);
 
     if (!WinHttpCrackUrl(
             wideUrl.c_str(),
@@ -52,6 +69,8 @@ bool InfluxWriter::sendLineProtocol(const std::string& lineData) {
             &components)) {
         return false;
     }
+
+    std::wstring fullPath = std::wstring(path) + std::wstring(extra);
 
     HINTERNET session = WinHttpOpen(
         L"VirtualIndustrialIoT/1.0",
@@ -80,7 +99,7 @@ bool InfluxWriter::sendLineProtocol(const std::string& lineData) {
     HINTERNET request = WinHttpOpenRequest(
         connection,
         L"POST",
-        path,
+        fullPath.c_str(),
         nullptr,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -165,33 +184,26 @@ bool InfluxWriter::sendLineProtocol(const std::string& lineData) {
 }
 
 bool InfluxWriter::write(const Telemetry& telemetry) {
-    std::string line =
-        "telemetry,machine=" + telemetry.machineId +
-        ",device=" + telemetry.deviceId +
-        ",sensor=" + telemetry.sensorType +
-        ",quality=" + telemetry.quality +
-        ",unit=" + (telemetry.unit.empty() ? "none" : telemetry.unit) +
-        " value=" + std::to_string(telemetry.value);
-
-    auto timestamp =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            telemetry.timestamp.time_since_epoch()
-        ).count();
-
-    line += " " + std::to_string(timestamp);
-
-    return sendLineProtocol(line);
+    return writeBatch({telemetry});
 }
 
 bool InfluxWriter::writeBatch(const std::vector<Telemetry>& batch) {
-    if (batch.empty()) {
+    std::vector<Telemetry> toSend;
+    toSend.reserve(pendingTelemetryRetry.size() + batch.size());
+    for (const auto& item : pendingTelemetryRetry) {
+        toSend.push_back(item);
+    }
+    for (const auto& item : batch) {
+        toSend.push_back(item);
+    }
+
+    if (toSend.empty()) {
         return true;
     }
 
     std::ostringstream oss;
-
-    for (size_t i = 0; i < batch.size(); ++i) {
-        const auto& t = batch[i];
+    for (size_t i = 0; i < toSend.size(); ++i) {
+        const auto& t = toSend[i];
 
         oss << "telemetry,machine=" << t.machineId
             << ",device=" << t.deviceId
@@ -207,40 +219,48 @@ bool InfluxWriter::writeBatch(const std::vector<Telemetry>& batch) {
 
         oss << " " << timestamp;
 
-        if (i < batch.size() - 1) {
+        if (i < toSend.size() - 1) {
             oss << "\n";
         }
     }
 
-    return sendLineProtocol(oss.str());
+    bool success = sendLineProtocol(oss.str());
+    if (success) {
+        pendingTelemetryRetry.clear();
+        return true;
+    } else {
+        pendingTelemetryRetry = std::move(toSend);
+        if (pendingTelemetryRetry.size() > 5000) {
+            pendingTelemetryRetry.erase(
+                pendingTelemetryRetry.begin(),
+                pendingTelemetryRetry.begin() + (pendingTelemetryRetry.size() - 5000)
+            );
+        }
+        return false;
+    }
 }
 
 bool InfluxWriter::writeEvent(const Event& event) {
-    std::string line =
-        "events,machine=" + event.machineId +
-        ",event_type=" + event.eventType +
-        ",severity=" + Event::severityToString(event.severity) +
-        " message=\"" + event.message + "\"";
-
-    auto timestamp =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            event.timestamp.time_since_epoch()
-        ).count();
-
-    line += " " + std::to_string(timestamp);
-
-    return sendLineProtocol(line);
+    return writeEvents({event});
 }
 
 bool InfluxWriter::writeEvents(const std::vector<Event>& events) {
-    if (events.empty()) {
+    std::vector<Event> toSend;
+    toSend.reserve(pendingEventsRetry.size() + events.size());
+    for (const auto& item : pendingEventsRetry) {
+        toSend.push_back(item);
+    }
+    for (const auto& item : events) {
+        toSend.push_back(item);
+    }
+
+    if (toSend.empty()) {
         return true;
     }
 
     std::ostringstream oss;
-
-    for (size_t i = 0; i < events.size(); ++i) {
-        const auto& e = events[i];
+    for (size_t i = 0; i < toSend.size(); ++i) {
+        const auto& e = toSend[i];
 
         oss << "events,machine=" << e.machineId
             << ",event_type=" << e.eventType
@@ -254,10 +274,23 @@ bool InfluxWriter::writeEvents(const std::vector<Event>& events) {
 
         oss << " " << timestamp;
 
-        if (i < events.size() - 1) {
+        if (i < toSend.size() - 1) {
             oss << "\n";
         }
     }
 
-    return sendLineProtocol(oss.str());
+    bool success = sendLineProtocol(oss.str());
+    if (success) {
+        pendingEventsRetry.clear();
+        return true;
+    } else {
+        pendingEventsRetry = std::move(toSend);
+        if (pendingEventsRetry.size() > 1000) {
+            pendingEventsRetry.erase(
+                pendingEventsRetry.begin(),
+                pendingEventsRetry.begin() + (pendingEventsRetry.size() - 1000)
+            );
+        }
+        return false;
+    }
 }

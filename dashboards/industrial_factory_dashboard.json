@@ -49,7 +49,7 @@
       "type": "stat",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
@@ -133,7 +133,7 @@
       "type": "stat",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
@@ -217,7 +217,7 @@
       "type": "stat",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
@@ -309,11 +309,11 @@
     },
     {
       "id": 4,
-      "title": "Machine Temperatures vs Automation Thresholds (70\u00b0C Fan, 80\u00b0C Pump, 95\u00b0C Shutdown)",
+      "title": "Machine Temperatures vs Automation Thresholds (70°C Fan, 80°C Pump, 95°C Shutdown)",
       "type": "timeseries",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 9,
@@ -388,11 +388,11 @@
     },
     {
       "id": 5,
-      "title": "Fan Actuator States (>= 70\u00b0C Rule)",
+      "title": "Fan Actuator States (>= 70°C Rule)",
       "type": "state-timeline",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 4,
@@ -413,6 +413,10 @@
                 "1": {
                   "text": "ACTIVE",
                   "color": "#06B6D4"
+                },
+                "2": {
+                  "text": "FAILED",
+                  "color": "#EF4444"
                 }
               }
             }
@@ -452,11 +456,11 @@
     },
     {
       "id": 6,
-      "title": "Coolant Pump Actuator States (>= 80\u00b0C Rule)",
+      "title": "Coolant Pump Actuator States (>= 80°C Rule)",
       "type": "state-timeline",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 5,
@@ -477,6 +481,10 @@
                 "1": {
                   "text": "ACTIVE",
                   "color": "#10B981"
+                },
+                "2": {
+                  "text": "FAILED",
+                  "color": "#EF4444"
                 }
               }
             }
@@ -532,7 +540,7 @@
       "type": "gauge",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
@@ -594,7 +602,7 @@
       "type": "timeseries",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
@@ -659,7 +667,7 @@
       "type": "timeseries",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
@@ -707,7 +715,7 @@
       "type": "timeseries",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
@@ -767,7 +775,7 @@
       "type": "table",
       "datasource": {
         "type": "influxdb",
-        "uid": "dfx5e82vpu680f"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "h": 9,
@@ -913,5 +921,27 @@
         }
       ]
     }
-  ]
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "InfluxDB (Athena)",
+          "value": "dfx5e82vpu680f"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data Source",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "influxdb",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  }
 }

@@ -9,9 +9,13 @@
 struct DeviceHealth {
     std::string machineId;
     std::string deviceId;
-    bool online;
+    bool online = false;
+    bool valid = true;
+    bool operational = true;
+    std::string statusSummary = "UNKNOWN";
+    std::string detail;
     std::chrono::system_clock::time_point lastSeen;
-    int missedHeartbeats;
+    int missedHeartbeats = 0;
 };
 
 class DeviceHealthMonitor {
@@ -29,11 +33,20 @@ public:
                          const std::string& deviceId);
 
     void registerDevice(const std::string& machineId,
-                        const std::string& deviceId);
+                         const std::string& deviceId);
+
+    void updateDeviceStatus(const std::string& machineId,
+                            const std::string& deviceId,
+                            bool heartbeat,
+                            bool valid,
+                            bool operational,
+                            const std::string& detail = "");
 
     void checkHealth();
 
     std::vector<DeviceHealth> getOfflineDevices() const;
+
+    std::vector<DeviceHealth> getUnhealthyDevices() const;
 
     std::vector<DeviceHealth> getAllDevices() const;
 
@@ -42,6 +55,15 @@ public:
 
     bool isDeviceOnline(const std::string& machineId,
                         const std::string& deviceId) const;
+
+    bool isDeviceValid(const std::string& machineId,
+                       const std::string& deviceId) const;
+
+    bool isDeviceOperational(const std::string& machineId,
+                             const std::string& deviceId) const;
+
+    bool isDeviceHealthy(const std::string& machineId,
+                         const std::string& deviceId) const;
 
     std::vector<std::string> getMissingSensors(
         const std::string& machineId) const;

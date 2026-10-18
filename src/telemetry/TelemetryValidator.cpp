@@ -9,7 +9,11 @@ bool TelemetryValidator::validate(const Telemetry& telemetry) const {
         return false;
     }
 
-    if (telemetry.quality != "good") {
+    if (telemetry.quality != "good" && telemetry.quality != "bad" && telemetry.quality != "invalid") {
+        return false;
+    }
+
+    if (telemetry.quality == "bad" || telemetry.quality == "invalid") {
         return false;
     }
 
@@ -39,7 +43,17 @@ bool TelemetryValidator::validate(const Telemetry& telemetry) const {
         }
     } else if (telemetry.sensorType == "fan" ||
                telemetry.sensorType == "pump") {
+        if (telemetry.value != 0.0 && telemetry.value != 1.0 && telemetry.value != 2.0) {
+            return false;
+        }
+    } else if (telemetry.sensorType == "fan_commanded" ||
+               telemetry.sensorType == "pump_commanded") {
         if (telemetry.value != 0.0 && telemetry.value != 1.0) {
+            return false;
+        }
+    } else if (telemetry.sensorType == "fan_cooling" ||
+               telemetry.sensorType == "pump_cooling") {
+        if (telemetry.value < 0.0 || telemetry.value > 100.0) {
             return false;
         }
     } else if (telemetry.sensorType == "status") {

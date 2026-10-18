@@ -6,6 +6,8 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <mutex>
+#include <queue>
 
 #include "factory/Factory.h"
 #include "automation/AutomationEngine.h"
@@ -18,6 +20,34 @@
 #include "config/ConfigManager.h"
 
 namespace {
+
+struct QueuedCommand {
+    std::string topic;
+    std::string message;
+};
+
+class CommandQueue {
+private:
+    std::mutex mtx;
+    std::queue<QueuedCommand> queue;
+
+public:
+    void push(const std::string& topic, const std::string& message) {
+        std::lock_guard<std::mutex> lock(mtx);
+        queue.push({topic, message});
+    }
+
+    bool pop(QueuedCommand& cmd) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (queue.empty()) {
+            return false;
+        }
+        cmd = queue.front();
+        queue.pop();
+        return true;
+    }
+};
+
 std::string getEnvOrDefault(const char* varName, const std::string& defaultValue) {
     const char* val = std::getenv(varName);
     if (val != nullptr && std::string(val).length() > 0) {
@@ -26,51 +56,18 @@ std::string getEnvOrDefault(const char* varName, const std::string& defaultValue
     return defaultValue;
 }
 
-void handleCommand(const std::string& topic,
-                   const std::string& message,
-                   Factory& factory,
-                   MQTTClient& mqtt,
-                   EventLogger& logger) {
-    std::cout << "[MQTT-CMD] Received on " << topic << ": " << message << std::endl;
+void executeSingleMachineCommand(Machine* machine,
+                                 const std::string& cmd,
+                                 const std::string& valStr,
+                                 bool& success,
+                                 std::string& responseMsg,
+                                 EventLogger& logger) {
+    const std::string& machineId = machine->getId();
 
-    std::string machineId = "";
-    size_t firstSlash = topic.find('/');
-    if (firstSlash != std::string::npos) {
-        size_t secondSlash = topic.find('/', firstSlash + 1);
-        if (secondSlash != std::string::npos) {
-            machineId = topic.substr(firstSlash + 1, secondSlash - firstSlash - 1);
-        }
-    }
-
-    if (machineId.empty()) {
-        machineId = "machine1";
-    }
-
-    Machine* machine = factory.getMachine(machineId);
-    std::string ackTopic = "factory/" + machineId + "/command/ack";
-
-    if (!machine) {
-        std::string nack = "{\"status\":\"ERROR\",\"message\":\"Machine not found: " + machineId + "\"}";
-        mqtt.publish(ackTopic, nack);
-        logger.log(machineId, "COMMAND_REJECTED", "Unknown machine: " + machineId, EventSeverity::WARNING);
-        return;
-    }
-
-    std::string cmd = message;
-    std::string valStr = "";
-    size_t spacePos = message.find(' ');
-    if (spacePos != std::string::npos) {
-        cmd = message.substr(0, spacePos);
-        valStr = message.substr(spacePos + 1);
-    }
-
-    bool success = false;
-    std::string responseMsg = "";
-
-    if (cmd == "STOP" || cmd == "SHUTDOWN" || message.find("\"STOP\"") != std::string::npos) {
+    if (cmd == "STOP" || cmd == "SHUTDOWN") {
         machine->triggerShutdown();
         success = true;
-        responseMsg = "Shutdown command executed";
+        responseMsg = "Emergency shutdown executed";
         logger.log(machineId, "COMMAND_EXECUTED", responseMsg, EventSeverity::CRITICAL);
     } else if (cmd == "SET_LOAD") {
         try {
@@ -81,10 +78,12 @@ void handleCommand(const std::string& topic,
                 responseMsg = "Load set to " + std::to_string(loadVal) + "%";
                 logger.log(machineId, "COMMAND_EXECUTED", responseMsg, EventSeverity::INFO);
             } else {
-                responseMsg = "Load value out of bounds (0-300)";
+                success = false;
+                responseMsg = "Load parameter out of range (0-300%)";
             }
         } catch (...) {
-            responseMsg = "Invalid load numeric format";
+            success = false;
+            responseMsg = "Invalid load numeric parameter";
         }
     } else if (cmd == "SET_FAN") {
         if (valStr == "ON" || valStr == "1" || valStr == "true") {
@@ -96,7 +95,8 @@ void handleCommand(const std::string& topic,
             success = true;
             responseMsg = "Fan turned OFF";
         } else {
-            responseMsg = "Invalid fan state (use ON/OFF)";
+            success = false;
+            responseMsg = "Invalid fan state parameter (use ON/OFF)";
         }
         if (success) {
             logger.log(machineId, "COMMAND_EXECUTED", responseMsg, EventSeverity::INFO);
@@ -111,47 +111,136 @@ void handleCommand(const std::string& topic,
             success = true;
             responseMsg = "Pump turned OFF";
         } else {
-            responseMsg = "Invalid pump state (use ON/OFF)";
+            success = false;
+            responseMsg = "Invalid pump state parameter (use ON/OFF)";
         }
         if (success) {
             logger.log(machineId, "COMMAND_EXECUTED", responseMsg, EventSeverity::INFO);
         }
-    } else if (cmd == "RESET_FAULT" || cmd == "CLEAR_FAULTS") {
-        machine->clearFaults();
-        success = true;
-        responseMsg = "Faults cleared";
-        logger.log(machineId, "COMMAND_EXECUTED", responseMsg, EventSeverity::INFO);
+    } else if (cmd == "RESET_FAULT" || cmd == "CLEAR_FAULTS" || cmd == "RECOVER") {
+        std::string rejectionReason;
+        if (machine->attemptRecovery(rejectionReason)) {
+            success = true;
+            responseMsg = rejectionReason;
+            logger.log(machineId, "COMMAND_EXECUTED", responseMsg, EventSeverity::INFO);
+        } else {
+            success = false;
+            responseMsg = rejectionReason;
+            logger.log(machineId, "COMMAND_REJECTED", responseMsg, EventSeverity::WARNING);
+        }
     } else if (cmd == "INJECT_FAULT") {
         if (valStr == "FAN") {
             machine->triggerFanFailure();
             success = true;
-            responseMsg = "Fan failure injected";
+            responseMsg = "Fan mechanical failure injected";
         } else if (valStr == "PUMP") {
             machine->triggerPumpFailure();
             success = true;
-            responseMsg = "Pump failure injected";
+            responseMsg = "Pump motor failure injected";
         } else if (valStr == "SENSOR") {
             machine->triggerSensorFailure();
             success = true;
-            responseMsg = "Sensor failure injected";
+            responseMsg = "Sensor failure injected (-999 C sentinel)";
         } else if (valStr == "OVERLOAD") {
             machine->triggerOverload(200.0);
             success = true;
-            responseMsg = "Overload injected (200%)";
+            responseMsg = "Electrical overload injected (200% load)";
         } else {
-            responseMsg = "Unknown fault type (use FAN, PUMP, SENSOR, OVERLOAD)";
+            success = false;
+            responseMsg = "Unknown fault injection parameter: " + valStr;
         }
         if (success) {
             logger.log(machineId, "FAULT_INJECTED", responseMsg, EventSeverity::WARNING);
         }
     } else {
+        success = false;
         responseMsg = "Unrecognized command: " + cmd;
     }
+}
 
-    std::string ackPayload = "{\"machine\":\"" + machineId + "\",\"command\":\"" + cmd + "\",\"status\":\"" + (success ? "SUCCESS" : "FAILED") + "\",\"message\":\"" + responseMsg + "\"}";
+void processCommand(const std::string& topic,
+                    const std::string& message,
+                    Factory& factory,
+                    MQTTClient& mqtt,
+                    EventLogger& logger) {
+    std::cout << "[MQTT-CMD] Processing from queue [" << topic << "]: " << message << std::endl;
+
+    std::string machineId = "";
+    size_t firstSlash = topic.find('/');
+    if (firstSlash != std::string::npos) {
+        size_t secondSlash = topic.find('/', firstSlash + 1);
+        if (secondSlash != std::string::npos) {
+            machineId = topic.substr(firstSlash + 1, secondSlash - firstSlash - 1);
+        }
+    }
+
+    if (machineId.empty()) {
+        machineId = "machine1";
+    }
+
+    std::string cmd = message;
+    std::string valStr = "";
+    size_t spacePos = message.find(' ');
+    if (spacePos != std::string::npos) {
+        cmd = message.substr(0, spacePos);
+        valStr = message.substr(spacePos + 1);
+    }
+
+    if (machineId == "all") {
+        std::string ackTopic = "factory/all/command/ack";
+        int totalSuccess = 0;
+        int totalAttempted = 0;
+        std::ostringstream details;
+
+        for (const auto& mPtr : factory.getMachines()) {
+            Machine* m = mPtr.get();
+            bool s = false;
+            std::string rMsg;
+            executeSingleMachineCommand(m, cmd, valStr, s, rMsg, logger);
+            totalAttempted++;
+            if (s) {
+                totalSuccess++;
+            }
+            details << "{\\\"machine\\\":\\\"" << m->getId() << "\\\",\\\"status\\\":\\\""
+                    << (s ? "SUCCESS" : "FAILED") << "\\\",\\\"message\\\":\\\"" << rMsg << "\\\"},";
+        }
+
+        std::string dStr = details.str();
+        if (!dStr.empty() && dStr.back() == ',') {
+            dStr.pop_back();
+        }
+
+        std::string ackPayload = "{\"target\":\"all\",\"command\":\"" + cmd +
+                                 "\",\"status\":\"" + (totalSuccess == totalAttempted ? "SUCCESS" : "PARTIAL") +
+                                 "\",\"executed\":" + std::to_string(totalSuccess) +
+                                 ",\"total\":" + std::to_string(totalAttempted) +
+                                 ",\"details\":[" + dStr + "]}";
+        mqtt.publish(ackTopic, ackPayload);
+        std::cout << "[MQTT-ACK] " << ackTopic << " -> " << ackPayload << std::endl;
+        return;
+    }
+
+    Machine* machine = factory.getMachine(machineId);
+    std::string ackTopic = "factory/" + machineId + "/command/ack";
+
+    if (!machine) {
+        std::string nack = "{\"machine\":\"" + machineId + "\",\"status\":\"ERROR\",\"message\":\"Machine not found\"}";
+        mqtt.publish(ackTopic, nack);
+        logger.log(machineId, "COMMAND_REJECTED", "Target machine not found: " + machineId, EventSeverity::WARNING);
+        return;
+    }
+
+    bool success = false;
+    std::string responseMsg;
+    executeSingleMachineCommand(machine, cmd, valStr, success, responseMsg, logger);
+
+    std::string ackPayload = "{\"machine\":\"" + machineId + "\",\"command\":\"" + cmd +
+                             "\",\"status\":\"" + (success ? "SUCCESS" : "FAILED") +
+                             "\",\"message\":\"" + responseMsg + "\"}";
     mqtt.publish(ackTopic, ackPayload);
     std::cout << "[MQTT-ACK] " << ackTopic << " -> " << ackPayload << std::endl;
 }
+
 }
 
 int main() {
@@ -188,25 +277,26 @@ int main() {
         }
     }
 
-    AutomationEngine automation;
+    AutomationEngine automation(config.fanThreshold, config.pumpThreshold, config.shutdownThreshold);
     EventLogger eventLogger;
     TelemetryProcessor telemetryProcessor;
+    CommandQueue commandQueue;
 
     MQTTClient mqtt(config.mqttBroker, config.mqttPort);
     bool mqttConnected = mqtt.connect();
     if (!mqttConnected) {
         std::cerr << "[MQTT-WARN] Could not connect to MQTT broker at "
                   << config.mqttBroker << ":" << config.mqttPort
-                  << ". Telemetry will continue simulation without MQTT." << std::endl;
+                  << ". Running simulation without active MQTT network." << std::endl;
     } else {
         for (const auto& m : config.machines) {
             std::string cmdTopic = "factory/" + m.id + "/command";
-            mqtt.subscribe(cmdTopic, [&factory, &mqtt, &eventLogger](const std::string& t, const std::string& msg) {
-                handleCommand(t, msg, factory, mqtt, eventLogger);
+            mqtt.subscribe(cmdTopic, [&commandQueue](const std::string& t, const std::string& msg) {
+                commandQueue.push(t, msg);
             });
         }
-        mqtt.subscribe("factory/all/command", [&factory, &mqtt, &eventLogger](const std::string& t, const std::string& msg) {
-            handleCommand(t, msg, factory, mqtt, eventLogger);
+        mqtt.subscribe("factory/all/command", [&commandQueue](const std::string& t, const std::string& msg) {
+            commandQueue.push(t, msg);
         });
     }
 
@@ -215,7 +305,7 @@ int main() {
     std::string influxBucket = getEnvOrDefault("INFLUX_BUCKET", config.influxBucket);
     std::string influxToken = getEnvOrDefault("INFLUX_TOKEN", config.influxToken);
 
-    std::cout << "[INFLUX] InfluxDB target: " << influxUrl
+    std::cout << "[INFLUX] Target URL: " << influxUrl
               << " | Org: " << influxOrg
               << " | Bucket: " << influxBucket << std::endl;
 
@@ -225,13 +315,18 @@ int main() {
 
     InfluxWriter influx(influxUrl, influxOrg, influxBucket, influxToken);
 
-    eventLogger.log("factory", "SYSTEM_START", "Virtual Industrial IoT Platform started", EventSeverity::INFO);
+    eventLogger.log("factory", "SYSTEM_START", "Virtual Industrial IoT Platform initialized", EventSeverity::INFO);
 
     int elapsedSeconds = 0;
     const int maxSimulationSeconds = 50;
     size_t loggedEventsIndex = 0;
 
     while (elapsedSeconds <= maxSimulationSeconds) {
+        QueuedCommand qCmd;
+        while (commandQueue.pop(qCmd)) {
+            processCommand(qCmd.topic, qCmd.message, factory, mqtt, eventLogger);
+        }
+
         std::cout << "\n--- [Cycle " << elapsedSeconds << "s] ----------------------------------------" << std::endl;
 
         if (elapsedSeconds == 15) {
@@ -254,7 +349,7 @@ int main() {
             Machine* mc = factory.getMachine("machine3");
             if (mc) {
                 mc->triggerSensorFailure();
-                eventLogger.log("machine3", "FAULT_INJECTED", "Simulated temperature sensor failure", EventSeverity::WARNING);
+                eventLogger.log("machine3", "FAULT_INJECTED", "Simulated temperature sensor failure (-999 C sentinel)", EventSeverity::WARNING);
             }
         }
 
@@ -287,7 +382,7 @@ int main() {
             if (machine->isShutdown()) {
                 statusValue = 2;
                 statusText = "SHUTDOWN";
-            } else if (machine->getTemperature() >= 80.0 || machine->hasFault()) {
+            } else if (machine->getTemperature() >= config.pumpThreshold || machine->hasFault()) {
                 statusValue = 1;
                 statusText = "WARNING";
             } else {
@@ -295,28 +390,34 @@ int main() {
                 statusText = "RUNNING";
             }
 
+            std::string fanText = machine->isFanFailed() ? "FAIL" : (machine->isFanRunning() ? "ON " : "OFF");
+            std::string pumpText = machine->isPumpFailed() ? "FAIL" : (machine->isPumpRunning() ? "ON " : "OFF");
+
             std::cout << std::left << std::setw(12) << mName
                       << " | Temp: " << std::fixed << std::setprecision(1) << std::setw(5) << machine->getTemperature() << " C"
                       << " | Load: " << std::setw(5) << machine->getLoad() << " %"
                       << " | Cur: " << std::setw(6) << machine->getCurrent() << " A"
                       << " | RPM: " << std::setw(6) << machine->getRPM()
-                      << " | Fan: " << (machine->isFanOn() ? (machine->isFanFailed() ? "FAIL" : "ON ") : "OFF")
-                      << " | Pump: " << (machine->isPumpOn() ? (machine->isPumpFailed() ? "FAIL" : "ON ") : "OFF")
+                      << " | Fan: " << fanText
+                      << " | Pump: " << pumpText
                       << " | Flow: " << std::setw(4) << machine->getCoolantFlow() << " L/m"
                       << " | Status: " << statusText << std::endl;
 
             auto now = std::chrono::system_clock::now();
 
-            if (!machine->isSensorFailed()) {
-                healthMonitor.recordHeartbeat(mId, "temperature_sensor");
-            }
-            healthMonitor.recordHeartbeat(mId, "current_sensor");
-            healthMonitor.recordHeartbeat(mId, "rpm_sensor");
-            healthMonitor.recordHeartbeat(mId, "load_sensor");
-            healthMonitor.recordHeartbeat(mId, "coolant_flow_sensor");
-            healthMonitor.recordHeartbeat(mId, "fan_status");
-            healthMonitor.recordHeartbeat(mId, "pump_status");
-            healthMonitor.recordHeartbeat(mId, "machine_status");
+            bool sensorValid = !machine->isSensorFailed();
+            healthMonitor.updateDeviceStatus(mId, "temperature_sensor", true, sensorValid, true,
+                sensorValid ? "Sensor operational" : "Sensor reading invalid (-999 C sentinel)");
+            healthMonitor.updateDeviceStatus(mId, "current_sensor", true, true, true, "Sensor operational");
+            healthMonitor.updateDeviceStatus(mId, "rpm_sensor", true, true, true, "Sensor operational");
+            healthMonitor.updateDeviceStatus(mId, "load_sensor", true, true, true, "Sensor operational");
+            healthMonitor.updateDeviceStatus(mId, "coolant_flow_sensor", true, true, true, "Sensor operational");
+            healthMonitor.updateDeviceStatus(mId, "fan_status", true, true, !machine->isFanFailed(),
+                machine->isFanFailed() ? "Fan mechanical failure" : (machine->isFanRunning() ? "Active cooling" : "Standby"));
+            healthMonitor.updateDeviceStatus(mId, "pump_status", true, true, !machine->isPumpFailed(),
+                machine->isPumpFailed() ? "Pump motor failure" : (machine->isPumpRunning() ? "Active liquid cooling" : "Standby"));
+            healthMonitor.updateDeviceStatus(mId, "machine_status", true, true, !machine->isShutdown(),
+                machine->isShutdown() ? "Shutdown" : "Operational");
 
             double reportedTemp = machine->getTemperature();
             std::string tempQuality = "good";
@@ -325,19 +426,27 @@ int main() {
                 tempQuality = "bad";
             }
 
+            double fanTelemState = static_cast<double>(machine->getFanTelemetryState());
+            double pumpTelemState = static_cast<double>(machine->getPumpTelemetryState());
+            std::string fanQuality = machine->isFanFailed() ? "bad" : "good";
+            std::string pumpQuality = machine->isPumpFailed() ? "bad" : "good";
+
             Telemetry tTemp{mId, "temperature_sensor", "temperature", reportedTemp, tempQuality, "C", now};
             Telemetry tCur{mId, "current_sensor", "current", machine->getCurrent(), "good", "A", now};
             Telemetry tRpm{mId, "rpm_sensor", "rpm", machine->getRPM(), "good", "RPM", now};
             Telemetry tLoad{mId, "load_sensor", "load", machine->getLoad(), "good", "%", now};
             Telemetry tFlow{mId, "coolant_flow_sensor", "coolant_flow", machine->getCoolantFlow(), "good", "L/min", now};
-            Telemetry tFan{mId, "fan_status", "fan", machine->isFanOn() ? 1.0 : 0.0, "good", "state", now};
-            Telemetry tPump{mId, "pump_status", "pump", machine->isPumpOn() ? 1.0 : 0.0, "good", "state", now};
+            Telemetry tFan{mId, "fan_status", "fan", fanTelemState, fanQuality, "state", now};
+            Telemetry tPump{mId, "pump_status", "pump", pumpTelemState, pumpQuality, "state", now};
             Telemetry tStatus{mId, "machine_status", "status", static_cast<double>(statusValue), "good", "state", now};
 
             std::vector<Telemetry> machineItems = {tTemp, tCur, tRpm, tLoad, tFlow, tFan, tPump, tStatus};
 
             for (auto& item : machineItems) {
-                telemetryProcessor.process(item);
+                bool processed = telemetryProcessor.process(item);
+                if (!processed && item.sensorType == "temperature") {
+                    std::cout << "[TELEMETRY-VALIDATOR] Tagged invalid reading on " << mId << " (" << item.value << " C)" << std::endl;
+                }
                 cycleBatch.push_back(item);
             }
 
@@ -348,25 +457,28 @@ int main() {
                 mqtt.publish(prefix + "rpm", std::to_string(machine->getRPM()));
                 mqtt.publish(prefix + "load", std::to_string(machine->getLoad()));
                 mqtt.publish(prefix + "coolant_flow", std::to_string(machine->getCoolantFlow()));
-                mqtt.publish(prefix + "fan", machine->isFanOn() ? "ON" : "OFF");
-                mqtt.publish(prefix + "pump", machine->isPumpOn() ? "ON" : "OFF");
+                mqtt.publish(prefix + "fan", machine->isFanFailed() ? "FAILED" : (machine->isFanRunning() ? "ON" : "OFF"));
+                mqtt.publish(prefix + "pump", machine->isPumpFailed() ? "FAILED" : (machine->isPumpRunning() ? "ON" : "OFF"));
+                mqtt.publish(prefix + "fan_state", std::to_string(machine->getFanTelemetryState()));
+                mqtt.publish(prefix + "pump_state", std::to_string(machine->getPumpTelemetryState()));
                 mqtt.publish(prefix + "status", statusText);
                 mqtt.publish("factory/" + mId + "/heartbeat", "{\"machine\":\"" + mId + "\",\"timestamp\":" + std::to_string(elapsedSeconds) + ",\"status\":\"" + statusText + "\"}");
             }
         }
 
         healthMonitor.checkHealth();
-        auto offlineDevs = healthMonitor.getOfflineDevices();
-        if (!offlineDevs.empty()) {
-            std::cout << "[HEALTH-ALERT] " << offlineDevs.size() << " device(s) offline/unresponsive:" << std::endl;
-            for (const auto& dev : offlineDevs) {
-                std::cout << "  -> " << dev.machineId << " / " << dev.deviceId << std::endl;
+        auto unhealthyDevs = healthMonitor.getUnhealthyDevices();
+        if (!unhealthyDevs.empty()) {
+            std::cout << "[HEALTH-ALERT] " << unhealthyDevs.size() << " device(s) in fault/degraded condition:" << std::endl;
+            for (const auto& dev : unhealthyDevs) {
+                std::cout << "  -> " << dev.machineId << " / " << dev.deviceId << ": " << dev.statusSummary
+                          << " (" << dev.detail << ")" << std::endl;
             }
         }
 
         bool influxBatchOk = influx.writeBatch(cycleBatch);
         std::cout << "[INFLUX] Batch telemetry (" << cycleBatch.size() << " points): "
-                  << (influxBatchOk ? "OK (Written to InfluxDB)" : "FAILED (InfluxDB offline/unreachable)") << std::endl;
+                  << (influxBatchOk ? "OK (Stored)" : "BUFFERED (Offline or retry pending: " + std::to_string(influx.getPendingTelemetryCount()) + " points)") << std::endl;
 
         const auto& allEvents = eventLogger.getEvents();
         if (allEvents.size() > loggedEventsIndex) {
@@ -379,7 +491,9 @@ int main() {
                     mqtt.publish(eventTopic, eventPayload);
                 }
             }
-            influx.writeEvents(newEvents);
+            bool eventsOk = influx.writeEvents(newEvents);
+            std::cout << "[INFLUX] Events (" << newEvents.size() << " new): "
+                      << (eventsOk ? "OK (Stored)" : "BUFFERED (Retry pending: " + std::to_string(influx.getPendingEventCount()) + " events)") << std::endl;
             loggedEventsIndex = allEvents.size();
         }
 

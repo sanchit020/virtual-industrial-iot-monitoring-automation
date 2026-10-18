@@ -13,6 +13,9 @@ private:
     std::string bucket;
     std::string token;
 
+    std::vector<Telemetry> pendingTelemetryRetry;
+    std::vector<Event> pendingEventsRetry;
+
     bool sendLineProtocol(const std::string& lineData);
 
 public:
@@ -28,6 +31,12 @@ public:
     bool writeEvent(const Event& event);
 
     bool writeEvents(const std::vector<Event>& events);
+
+    size_t getPendingTelemetryCount() const;
+
+    size_t getPendingEventCount() const;
+
+    void clearRetryBuffers();
 };
 
 #endif

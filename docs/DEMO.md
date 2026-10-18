@@ -1,99 +1,135 @@
 # Demonstration & Verification Guide
 
-This guide details the end-to-end demonstration scenario, interactive MQTT control, and verification suite built into the Virtual Industrial IoT Platform.
+This guide details the programmed demonstration scenario, interactive MQTT control protocols (including broadcast routing), safety recovery rules, and the automated verification suite.
 
 ---
 
-## 1. Programmed 50-Second Demonstration Timeline
+## 1. Programmed 50-Second Multi-Machine Timeline
 
-The platform executable (`virtual-industrial-iot.exe`) contains a programmed 50-second multi-machine demonstration loop implemented directly in `src/main.cpp` (`while (elapsedSeconds <= maxSimulationSeconds)`). Each cycle executes at a deterministic 1-second interval, advancing simulation physics, evaluating automation rules, and logging telemetry:
+The platform executable (`virtual-industrial-iot.exe`) contains a 50-second multi-machine demonstration loop implemented in `src/main.cpp`. Each cycle executes at a deterministic 1-second interval, advancing simulation physics, evaluating automation rules, and logging telemetry:
 
-| Time (s) | Target Machine | Injected Fault / Operational Event | Implementation & Expected System Reaction |
+| Time (s) | Target Machine | Injected Fault / Scenario | Implementation & System Reaction |
 |---|---|---|---|
-| **0s** | All Machines | **Factory Startup** | All 3 machines register (`Machine A`, `Machine B`, `Machine C`), devices online, initial heartbeats logged. Baseline: ~26°C, 60% load, 1800 RPM, 600 A. |
-| **15s** | Machine B (`machine2`) | **Fan Mechanical Failure** | `mb->triggerFanFailure()`. Actuator state reports `Fan: FAIL`. When temperature exceeds 70°C, fan forced-air cooling is unavailable, and Machine B transitions to `WARNING`. |
-| **20s** | Machine A (`machine1`) | **Electrical Overload (200% Load)** | `ma->triggerOverload(200.0)`. Electrical current jumps to 2000 A, motor speed to 6000 RPM. Rapid heating (+4.0°C/s) triggers Fan at 70°C and Pump at 80°C. |
-| **25s** | Machine C (`machine3`) | **Sensor Failure (Sentinel: `-999.0°C`)** | `mc->triggerSensorFailure()`. Sensor begins reporting `-999.0°C` (the simulation's custom sentinel error value). `TelemetryValidator` marks quality as `invalid`. |
-| **30s** | Machine C (`machine3`) | **Coolant Pump Failure + 150% Load** | `mc->triggerPumpFailure()` with load set to 150%. Liquid coolant flow remains `0.0 L/min`. Machine C undergoes thermal escalation without cooling. |
-| **35s** | Machine C (`machine3`) | **Device Health Alert** | `DeviceHealthMonitor` detects missing temperature heartbeats exceeding the 10-second threshold and raises `[HEALTH-ALERT] machine3 / temperature_sensor`. |
-| **45s** | Machine C (`machine3`) | **Emergency Fail-Safe Shutdown** | Upon reaching 96°C ($\ge 95^\circ\text{C}$ threshold), deterministic safety logic trips: power/load cuts to 0%, current drops to 0 A, and machine enters `SHUTDOWN`. |
-| **51s** | All Machines | **Simulation Complete** | Clean shutdown, final metrics reported, 42 structured events recorded, and MQTT disconnected. |
+| **0s** | All Machines | **Platform Initialization** | Registers `machine1` (Machine A), `machine2` (Machine B), and `machine3` (Machine C). Health monitor registers sensors and actuators. Baseline: 25°C, 60% load, 600 A, 1800 RPM. |
+| **15s** | Machine B (`machine2`) | **Fan Mechanical Failure** | `mb->triggerFanFailure()`. Actuator reports state `2` (FAILED) with quality `"bad"`. When temperature exceeds 70°C, forced-air convection is unavailable, prompting pump engagement at 80°C. |
+| **20s** | Machine A (`machine1`) | **Electrical Overload (200% Load)** | `ma->triggerOverload(200.0)`. Electrical current reaches 2000 A, motor speed reaches 6000 RPM. Rapid heating (+4.0°C/s) activates Fan at 70°C and Pump at 80°C. |
+| **25s** | Machine C (`machine3`) | **Sensor Failure (Sentinel: `-999.0°C`)** | `mc->triggerSensorFailure()`. Sensor begins reporting `-999.0°C`. `TelemetryProcessor` marks quality as `"invalid"`. Automation enters fail-safe cooling mode to protect unmonitored equipment. |
+| **30s** | Machine C (`machine3`) | **Coolant Pump Motor Failure + 150% Load** | `mc->triggerPumpFailure()` with load set to 150%. Liquid coolant flow zeroes (`Flow: 0.0 L/m`). Pump reports state `2` (FAILED). Machine undergoes thermal escalation. |
+| **35s+** | Machine B & C | **Device Health Alerts** | `DeviceHealthMonitor` detects hardware failure on Machine B fan and Machine C pump, and invalid data on Machine C temperature sensor: `[HEALTH-ALERT] 3 device(s) in fault/degraded condition`. |
+| **51s** | All Machines | **Simulation Complete** | Clean shutdown, final metrics reported, 20 clean edge-triggered events stored in InfluxDB, and MQTT disconnected. |
 
 > **Note on Sentinel Sensor Value (`-999.0°C`)**:
-> The `-999.0°C` reading is the **simulation's custom out-of-band sentinel value**, designed to distinguish a broken sensor probe from legitimate zero or ambient temperature readings. This allows the `TelemetryValidator` and `DeviceHealthMonitor` to flag corrupted hardware channels and trigger maintenance alerts.
+> The `-999.0°C` reading is a **custom simulated sensor-failure marker** representing a hardware failure (such as an open thermocouple or corrupted ADC read). The telemetry validation pipeline marks these records with `quality = "invalid"`, and Grafana filters out sub-zero readings (`r._value >= 0.0 and r.quality == "good"`) so that temperature charts are not distorted while the event log retains the fault history.
 
 ---
 
 ## 2. Interactive MQTT Command & Control Protocol
 
-In addition to the autonomous timeline, `src/main.cpp` subscribes to `factory/<machineId>/command` and `factory/all/command`. The platform parses incoming text commands, applies the required state modification to the virtual machine, logs an event, and publishes a structured JSON acknowledgement to `factory/<machineId>/command/ack`.
+`src/main.cpp` subscribes to both point-to-point topics (`factory/<machineId>/command`) and the broadcast topic (`factory/all/command`). Commands are routed through a thread-safe `CommandQueue` and executed deterministically on the simulation thread.
 
-While the simulation is running, open a separate terminal to send real-time commands and observe live execution:
+### Point-to-Point Machine Commands
 
-### 1. Emergency Machine Shutdown
+#### 1. Emergency Machine Shutdown
 ```powershell
 mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine2/command" -m "STOP"
 ```
 **JSON Acknowledgement on `factory/machine2/command/ack`**:
 ```json
-{"machine":"machine2","command":"STOP","status":"SUCCESS","message":"Shutdown command executed"}
+{"machine":"machine2","command":"STOP","status":"SUCCESS","message":"Emergency shutdown executed"}
 ```
 
-### 2. Manual Electrical Load Setpoint
+#### 2. Electrical Load Setpoint Adjustment
 ```powershell
-mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine1/command" -m "SET_LOAD 75.0"
+mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine1/command" -m "SET_LOAD 85.0"
 ```
 **JSON Acknowledgement on `factory/machine1/command/ack`**:
 ```json
-{"machine":"machine1","command":"SET_LOAD","status":"SUCCESS","message":"Load set to 75.000000%"}
+{"machine":"machine1","command":"SET_LOAD","status":"SUCCESS","message":"Load set to 85.000000%"}
 ```
 
-### 3. Cooling Actuator Manual Override
+#### 3. Manual Actuator Override
 ```powershell
 mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine1/command" -m "SET_FAN ON"
 mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine1/command" -m "SET_PUMP ON"
 ```
-**JSON Acknowledgement on `factory/machine1/command/ack`**:
-```json
-{"machine":"machine1","command":"SET_FAN","status":"SUCCESS","message":"Fan turned ON"}
-```
 
-### 4. Dynamic Fault Injection
+#### 4. Fault Injection
 ```powershell
 mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine3/command" -m "INJECT_FAULT PUMP"
 ```
 Supported fault types: `FAN`, `PUMP`, `SENSOR`, `OVERLOAD`.
-**JSON Acknowledgement on `factory/machine3/command/ack`**:
-```json
-{"machine":"machine3","command":"INJECT_FAULT","status":"SUCCESS","message":"Pump failure injected"}
-```
 
-### 5. Fault Reset & Recovery
+#### 5. Safe Fault Reset & Recovery
 ```powershell
 mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/machine3/command" -m "RESET_FAULT"
 ```
-**JSON Acknowledgement on `factory/machine3/command/ack`**:
+* **If Machine is Hot ($\ge 80^\circ\text{C}$)**:
+  ```json
+  {"machine":"machine3","command":"RESET_FAULT","status":"FAILED","message":"Recovery rejected: Core temperature 85 C is above safe threshold (80 C). Wait for cooldown."}
+  ```
+* **If Machine has Cooled ($< 80^\circ\text{C}$)**:
+  ```json
+  {"machine":"machine3","command":"RESET_FAULT","status":"SUCCESS","message":"Machine recovered to normal operational state"}
+  ```
+
+---
+
+### Broadcast Machine Commands (`factory/all/command`)
+
+The `factory/all/command` topic dispatches commands simultaneously to all machines in the factory:
+
+#### Broadcast Factory-Wide Emergency Stop
+```powershell
+mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/all/command" -m "STOP"
+```
+**Aggregated JSON Acknowledgement on `factory/all/command/ack`**:
 ```json
-{"machine":"machine3","command":"RESET_FAULT","status":"SUCCESS","message":"Faults cleared"}
+{
+  "target": "all",
+  "command": "STOP",
+  "status": "SUCCESS",
+  "executed": 3,
+  "total": 3,
+  "details": [
+    {"machine": "machine1", "status": "SUCCESS", "message": "Emergency shutdown executed"},
+    {"machine": "machine2", "status": "SUCCESS", "message": "Emergency shutdown executed"},
+    {"machine": "machine3", "status": "SUCCESS", "message": "Emergency shutdown executed"}
+  ]
+}
+```
+
+#### Broadcast Load Normalization
+```powershell
+mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/all/command" -m "SET_LOAD 60.0"
+```
+
+#### Broadcast Safe Recovery
+```powershell
+mosquitto_pub -h 127.0.0.1 -p 1883 -t "factory/all/command" -m "RESET_FAULT"
 ```
 
 ---
 
 ## 3. Automated Verification Test Suite
 
-Run the automated test binary to verify rules, validators, physics, health monitoring, configuration, and command logic:
+Run the automated test suite to verify all core functional modules:
 ```powershell
 .\build\Release\industrial-iot-tests.exe
 ```
-Expected output:
+Output:
 ```text
-Running Industrial IoT Automated Test Suite...
-[PASS] TelemetryValidator tests passed
-[PASS] AutomationEngine rules tests passed
-[PASS] Machine physics and faults tests passed
-[PASS] DeviceHealthMonitor tests passed
-[PASS] ConfigManager tests passed
-[PASS] MQTT command processing logic tests passed
+======================================================
+   Virtual Industrial IoT Automated Test Suite
+   (Release-mode active assertion validation)
+======================================================
+[PASS] testAssertionIntegrity (Release-mode active verification)
+[PASS] testTelemetryValidator
+[PASS] testAutomationEngineRules
+[PASS] testMachinePhysicsAndFaults
+[PASS] testMachineRecoveryRules (Safe cooldown verification)
+[PASS] testDeviceHealthMonitor (Heartbeat vs validity vs operational state)
+[PASS] testConfigManager (JSON parsing, clearing on reload, threshold validation)
+[PASS] testMQTTCommandLogic (Command execution, actuator separation, and shutdown telemetry)
 
-ALL AUTOMATED TESTS PASSED SUCCESSFULLY!
+ALL 8 AUTOMATED TEST SUITES PASSED SUCCESSFULLY (100% VALIDATED)!
 ```

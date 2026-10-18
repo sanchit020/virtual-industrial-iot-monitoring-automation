@@ -38,6 +38,7 @@ public:
     void triggerSensorFailure();
     void triggerOverload(double overloadValue);
     void clearFaults();
+    bool attemptRecovery(std::string& rejectionReason);
 
     const std::string& getId() const;
     const std::string& getName() const;
@@ -51,6 +52,17 @@ public:
     bool isFanOn() const;
     bool isPumpOn() const;
     bool isShutdown() const;
+
+    bool isFanCommanded() const;
+    bool isPumpCommanded() const;
+    bool isFanOperational() const;
+    bool isPumpOperational() const;
+    bool isFanRunning() const;
+    bool isPumpRunning() const;
+    double getFanCoolingRate() const;
+    double getPumpCoolingRate() const;
+    int getFanTelemetryState() const;
+    int getPumpTelemetryState() const;
 
     bool isFanFailed() const;
     bool isPumpFailed() const;
