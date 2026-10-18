@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND EXISTS "C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
+    set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+endif()
+
 project(VirtualIndustrialIoT LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -16,7 +20,7 @@ file(GLOB_RECURSE CORE_SOURCES
     "${CMAKE_SOURCE_DIR}/src/mqtt/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/storage/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/telemetry/*.cpp"
-    "${CMAKE_SOURCE_DIR}/factory/*.cpp"
+    "${CMAKE_SOURCE_DIR}/src/factory/*.cpp"
 )
 
 add_executable(virtual-industrial-iot

@@ -159,11 +159,46 @@ void testConfigManager() {
     const auto& c = cfg.getConfig();
 
     assert(!c.machines.empty());
+    assert(c.influxOrg == "athena");
+    assert(c.influxBucket == "industrial_iot");
+    assert(c.influxToken.empty());
     assert(c.fanThreshold == 70.0);
     assert(c.pumpThreshold == 80.0);
     assert(c.shutdownThreshold == 95.0);
 
     std::cout << "[PASS] ConfigManager tests passed" << std::endl;
+}
+
+void testMQTTCommandProcessing() {
+    Machine m("machine1", "Machine A");
+    assert(!m.isShutdown());
+
+    m.setLoad(150.0);
+    assert(m.getLoad() == 150.0);
+    assert(m.getCurrent() == 1500.0);
+    assert(m.getRPM() == 4500.0);
+
+    m.setFan(true);
+    assert(m.isFanOn());
+
+    m.setPump(true);
+    assert(m.isPumpOn());
+    assert(m.getCoolantFlow() == 10.0);
+
+    m.triggerPumpFailure();
+    assert(m.isPumpFailed());
+    assert(m.getCoolantFlow() == 0.0);
+
+    m.clearFaults();
+    assert(!m.isPumpFailed());
+
+    m.triggerShutdown();
+    assert(m.isShutdown());
+    assert(m.getLoad() == 0.0);
+    assert(!m.isFanOn());
+    assert(!m.isPumpOn());
+
+    std::cout << "[PASS] MQTT command processing logic tests passed" << std::endl;
 }
 
 int main() {
@@ -173,6 +208,7 @@ int main() {
     testMachinePhysicsAndFaults();
     testDeviceHealthMonitor();
     testConfigManager();
+    testMQTTCommandProcessing();
     std::cout << "\nALL AUTOMATED TESTS PASSED SUCCESSFULLY!" << std::endl;
     return 0;
 }

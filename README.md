@@ -140,8 +140,9 @@ The platform models realistic industrial equipment failure modes:
 * **Electrical Overload (Machine A & C)**: Simulated electrical surge to 200% / 150% load, driving rapid thermal runaway ($+4.0^\circ\text{C/s}$).
 * **Mechanical Fan Failure (Machine B)**: Fan motor seizes, disabling forced-air convection and demonstrating thermostatic oscillation.
 * **Coolant Pump Failure (Machine C)**: Pump motor failure zeroes coolant flow (`Flow: 0.0 L/m`), leaving high-load equipment without liquid cooling and provoking emergency shutdown at 95°C.
-* **Sensor Hardware Failure (Machine C)**: Simulates physical sensor failure (e.g. open-circuit thermocouple probe). In accordance with industrial instrumentation standards (NAMUR NE 43):
-  * Emits an out-of-range sentinel error code: **`-999.0°C`**.
+* **Sensor Hardware Failure (Machine C)**: Simulates physical sensor failure (e.g. open-circuit thermocouple probe):
+  * Emits the simulation's custom out-of-band sentinel error value: **`-999.0°C`**.
+  * Enables the telemetry validation pipeline to distinguish a hardware sensor fault from legitimate low or zero temperature readings.
   * Marks telemetry quality as `"bad"` / `"invalid"`.
   * Suspends sensor heartbeats, prompting automated health detection.
 
@@ -245,26 +246,26 @@ cmake --build build --config Release
 .\build\Release\industrial-iot-tests.exe
 ```
 Output:
-```
-[TEST 1] Initial machine state: PASSED
-[TEST 2] Machine thermal physics: PASSED
-[TEST 3] Telemetry validation: PASSED
-[TEST 4] Fan automation rule (>= 70 C): PASSED
-[TEST 5] Pump automation rule (>= 80 C): PASSED
-[TEST 6] Emergency shutdown rule (>= 95 C): PASSED
-[TEST 7] Device health monitor & timeouts: PASSED
-[TEST 8] Event logger & severity filtering: PASSED
-[TEST 9] MQTT command parser: PASSED
-All 9 unit tests passed successfully!
+```text
+Running Industrial IoT Automated Test Suite...
+[PASS] TelemetryValidator tests passed
+[PASS] AutomationEngine rules tests passed
+[PASS] Machine physics and faults tests passed
+[PASS] DeviceHealthMonitor tests passed
+[PASS] ConfigManager tests passed
+[PASS] MQTT command processing logic tests passed
+
+ALL AUTOMATED TESTS PASSED SUCCESSFULLY!
 ```
 
 ### 3. Run the Factory Platform Simulation
-Ensure InfluxDB and Mosquitto are running, then launch the simulation:
+Ensure InfluxDB and Mosquitto are running and your token is set, then launch the simulation:
 ```powershell
+$env:INFLUX_TOKEN = "<your_token_here>"
 .\build\Release\virtual-industrial-iot.exe
 ```
 
-Credentials, topics, thresholds, and endpoints are automatically loaded from `config/factory.json`.
+Credentials (org: `athena`, bucket: `industrial_iot`), topics, thresholds, and endpoints are automatically loaded from `config/factory.json`.
 
 ### 4. View in Grafana
 1. Navigate to **`http://localhost:3000`**.

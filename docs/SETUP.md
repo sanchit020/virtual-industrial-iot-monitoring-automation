@@ -36,21 +36,25 @@ mosquitto_sub -h 127.0.0.1 -p 1883 -t "factory/#" -v
 ### Initial Setup
 1. Open your browser at `http://localhost:8086`.
 2. Configure initial credentials:
-   - **Organization Name**: `factory_org`
-   - **Initial Bucket Name**: `factory_telemetry`
+   - **Organization Name**: `athena`
+   - **Initial Bucket Name**: `industrial_iot`
    - **User**: `admin`
 3. Generate an API token:
    - Navigate to **Data** -> **API Tokens**.
-   - Create an All-Access or Custom Token for `factory_telemetry`.
+   - Create an All-Access or Custom Token for `industrial_iot`.
    - Copy this token.
 
 ### Setting Environment Variables
-Set the token in your terminal session before launching the C++ application:
+Set the token in your terminal session before launching the C++ application (credentials are loaded securely from environment variables, never hardcoded in repository files):
 ```powershell
 $env:INFLUX_URL = "http://localhost:8086"
-$env:INFLUX_ORG = "factory_org"
-$env:INFLUX_BUCKET = "factory_telemetry"
+$env:INFLUX_ORG = "athena"
+$env:INFLUX_BUCKET = "industrial_iot"
 $env:INFLUX_TOKEN = "<paste_your_token_here>"
+```
+Alternatively, to persist the token across all PowerShell sessions on your machine:
+```powershell
+[System.Environment]::SetEnvironmentVariable('INFLUX_TOKEN', '<paste_your_token_here>', 'User')
 ```
 
 ---
@@ -72,9 +76,9 @@ $env:INFLUX_TOKEN = "<paste_your_token_here>"
    - **URL**: `http://localhost:8086` (or `http://host.docker.internal:8086` if Grafana is in Docker)
    - Disable **Basic Auth**.
    - Under **InfluxDB Details**:
-     - **Organization**: `factory_org`
+     - **Organization**: `athena`
      - **Token**: `<your_influx_token>`
-     - **Default Bucket**: `factory_telemetry`
+     - **Default Bucket**: `industrial_iot`
 5. Click **Save & test**.
 
 ### Importing the Dashboard

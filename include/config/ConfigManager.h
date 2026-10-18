@@ -15,9 +15,9 @@ struct FactoryConfig {
     std::string mqttBroker = "127.0.0.1";
     int mqttPort = 1883;
     std::string influxUrl = "http://localhost:8086";
-    std::string influxOrg = "factory_org";
-    std::string influxBucket = "factory_telemetry";
-    std::string influxToken = "admin_token";
+    std::string influxOrg = "athena";
+    std::string influxBucket = "industrial_iot";
+    std::string influxToken = "";
     double fanThreshold = 70.0;
     double pumpThreshold = 80.0;
     double shutdownThreshold = 95.0;
